@@ -36,6 +36,15 @@ argparser.add_argument(
 	default='./test/',
 	help='path to an image or an video (mp4 format)')
 
+def area(x,y):
+	if(x>0.1 and y<0.5):
+		return 1
+	else:
+		return 2
+
+def dist(x1,y1,x2,y2):
+	return (x1-x2)**2 + (y1-y2)**2
+
 def common_area(box1, box2):
 
 	xmin1  = ((box1.x - box1.w/2) * 1.0)
@@ -54,7 +63,9 @@ def common_area(box1, box2):
 	intersect[2] = min(xmax1, xmax2)
 	intersect[3] = min(ymax1, ymax2)
 
-	if(intersect[1] < intersect[3] and intersect[0] < intersect[2]):
+	t = max(((intersect[3]-intersect[1])*(intersect[2]-intersect[0])/float((xmax1 - xmin1)*(ymax1 - ymin1))), ((intersect[3]-intersect[1])*(intersect[2]-intersect[0])/float((xmax2 - xmin2)*(ymax2 - ymin2))))
+
+	if(intersect[1] < intersect[3] and intersect[0] < intersect[2] and t>0.7):
 		return 1
 	else:
 		return -1
@@ -85,20 +96,38 @@ def _main_(args):
 	print weights_path
 	yolo.load_weights(weights_path)
 
+	k = 6 # max possible 4 boxes in one frame and 2 buffer
 	counter = 0
-	k = 4 # max possible4 boxes in one frame
-	origin = [0 for i in range(k)]
-	now = [0 for i in range(k)]
-	for image_file in sorted(os.listdir(image_path)):
+
+	flag = [0 for i in range(k)]
+	flag2 = [0 for i in range(k)]
+
+	originx = [0 for i in range(k)]
+	originy = [0 for i in range(k)]
+
+	nowy = [0 for i in range(k)]
+	nowx = [0 for i in range(k)]
+	for image_file in sorted(os.listdir(image_path))[:-1]:
 
 		# image = Image.open(os.path.join(image_path, image_file))
+		thresh =0.6
 		image = cv2.imread(os.path.join(image_path, image_file))
 		boxes = yolo.predict(image)
-
+		t = []
+		for q in boxes:
+			if(q.get_score()>thresh):
+				t.append(q)
+		boxes = t
 ####### multiple identification removal
-		if(len(boxes)>0):
+		l = []
+		if(len(boxes)==1):
+			if(boxes[0].get_score()>thresh):
+				l.append(boxes[0])
+			boxes = l
+
+		elif(len(boxes)>0):
 			mark = [0 for i in range(len(boxes))]
-			l = []
+		
 
 			x = []
 			for box1 in range(len(boxes)):
@@ -143,7 +172,7 @@ def _main_(args):
 
 				
 				for box in range(len(boxes)):
-					if(mark[box]==0):
+					if(mark[box]==0 and boxes[box].get_score()>thresh):
 						l.append(boxes[box])
 
 				print(mark)
@@ -151,7 +180,7 @@ def _main_(args):
 				boxes = l
 
 ########
-				
+			
 
 		image = draw_boxes(image, boxes, config['model']['labels'])
 
@@ -163,32 +192,109 @@ def _main_(args):
 		boxes.sort(key=operator.attrgetter('x'))
 		boxes = boxes[::-1]
 
-		for i in range(k):
-			if(len(boxes)>i):
- 
-				if(now[i]==0):
-					origin[i] = boxes[i].y
 
-				now[i] = boxes[i].y
+		mark = [-1 for i in range(len(boxes))]
+
+# stable matching problem!!
+		
+		match = []
+		for box in range(len(boxes)):
+			t_match = []
+			for i in range(k):
+				if(abs(boxes[box].x - nowx[i])<=0.3 and abs(boxes[box].y - nowy[i])<=0.3 and nowx[i]!=0):
+					t_match.append((dist(boxes[box].x, nowx[i],boxes[box].y, nowy[i]),i))
+			t_match.sort()
+			match.append(t_match)
+
+		for box in range(len(boxes)):
+			while(len(match[box])>0):
+				f = 0
+				for i in range(box+1,len(boxes)):
+					if(len(match[i])>0):
+						if((match[i][0][0]<match[box][0][0] and match[i][0][1]==match[box][0][1]) or match[box][0][1] in mark):
+							f = 1
+							break
+				if(f==0 and match[box][0][1] not in mark):
+					mark[box] = match[box][0][1]
+					break
+				else:
+					match[box].pop(0)
+
+
+		put = 0
+		for i in range(len(mark)):
+			if(mark[i]==-1):
+				while(put in mark or nowx[put]!=0):
+					put+=1
+				
+				mark[i] = put
+						
+
+
+		for i in range(k):
+
+			if(i in mark):
+				flag2[i] += 1
+ 				flag[i] = 0
+				if(nowy[i]==0):
+					originy[i] = boxes[mark.index(i)].y
+					originx[i] = boxes[mark.index(i)].x
+
+
+				nowy[i] = boxes[mark.index(i)].y
+				nowx[i] = boxes[mark.index(i)].x
 
 			else:
-				if(origin[i]!=0):
-					if(origin[i]-now[i] <= 0):
-						counter += 1
-						origin[i]=0
-						now[i]=0
-					else:
-						counter += 1
-						origin[i]=0
-						now[i]=0
+				if(originy[i]!=0):
 
-		print(origin)
-		print(now)
+					flag[i] += 1
+					if(flag[i]>=10):
+						if(flag2[i]>=6):
+
+							if(area(originx[i],originy[i])==1 and area(nowx[i],nowy[i])==2):
+								counter += 1
+							elif(area(originx[i],originy[i])==2 and area(nowx[i],nowy[i])==1):
+								counter -= 1
+							else:
+								if(abs(originy[i]-nowy[i]) > 0.3):
+
+									if(originy[i]-nowy[i] <= 0 ):
+										counter += 1
+									else:
+										counter -= 1
+
+						nowy[i]=0
+						nowx[i] = 0
+						originx[i]=0
+						originy[i]=0	
+
+						flag[i] = 0
+						flag2[i] = 0
+		print(mark)
+		print(flag)
+		print(flag2)
+		print(originx)
+		print(originy)
+		print(nowx)
+		print(nowy)		
 		print(counter)
 
 	for i in range(k):
-		if(now[i]!=0):
-			counter+=1
+		if(originy[i]!=0):
+
+			if(flag2[i]>=6):
+
+				if(area(originx[i],originy[i])==1 and area(nowx[i],nowy[i])==2):
+					counter += 1
+				elif(area(originx[i],originy[i])==2 and area(nowx[i],nowy[i])==1):
+					counter -= 1
+				else:
+					if(abs(originy[i]-nowy[i]) > 0.3):
+
+						if(originy[i]-nowy[i] <= 0 ):
+							counter += 1
+						else:
+							counter -= 1
 	print(counter)
 
 if __name__ == '__main__':
