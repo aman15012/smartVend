@@ -37,7 +37,7 @@ argparser.add_argument(
 	help='path to an image or an video (mp4 format)')
 
 def area(x,y):
-	if(x>0.1 and y<0.5):
+	if(x>0.18 and y<0.5):
 		return 1
 	else:
 		return 2
